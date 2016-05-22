@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title></title>
+</head>
+<body>
+<div id="container">
+    <p id="location"></p>
+    <p id="peers"></p>
+</div>
+
+<script src="/bundle.js"></script>
+<script src="/matrix4.js"></script>
+<script src="/build/jquery-1.4.min.js"></script>
+<script src="/build/three.js"></script>
+<script src="/js/loaders/ColladaLoader.js"></script>
+<script src="/js/libs/stats.min.js"></script>
+<script src="/js/controls/thirdPersonControls.js"></script>
+<script src="/scene-scale.js"></script>
+<script type="text/javascript">
+    var WebTorrent=require("webtorrent");
+    /*******************************************************/
+    var timeStart,timeEnd,loadTime;
+
+    var container = document.getElementById( 'container' );
+    var peerInfo=document.getElementById('peers');
+
+    var peerAddress=[];//存储peers
+
+    /********************************************************/
+   /*var client=new WebTorrent({
+        rtcConfig:{
+            "iceServers":[
+                {"url":"stun:23.21.150.121","urls":"stun:23.21.150.121"},{"url":"turn:global.turn.twilio.com:3478?transport=udp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=udp"},{"url":"turn:global.turn.twilio.com:3478?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=tcp"},{"url":"turn:global.turn.twilio.com:443?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:443?transport=tcp"}
+            ]
+        }
+    });*/
+	var client=new WebTorrent();
+    init();
+
+
+    function init() {
+	console.log("hello");
+                var magnetUrl= "fa15dd839a4a5f6924af4a87ae4679c1bf9dcbee";
+                var cDate=new Date();
+                timeStart=cDate.getTime();
+                client.add(magnetUrl,{
+                            announce:['ws://cg.tongji.edu.cn:80']
+                        },function(torrent){
+                            console.log('Client is downloading:', torrent.infoHash);
+                            torrent.on('wire',function(wire){
+                                console.log("new node"+wire.peerId.toString()+''+wire.remoteAddress);
+                            });
+                            torrent.on('peer',function(peer){
+                                if(peerAddress.every(function(element,index,array){
+                                            return element.id!==peer.id;
+                                        })){
+                                    peerAddress.push(peer);
+                                    peerInfo.innerHTML=peerInfo.innerHTML+" "+peer.id;
+                                    console.log("new peerAddress",peerAddress);
+                                }else{
+                                    console.log("old peer");
+                                }
+
+                            });
+                            torrent.on('done',function(){
+                                var cDate=new Date();
+                                timeEnd=cDate.getTime();
+                                loadTime=timeEnd -timeStart;
+                                console.log("group time:"+ loadTime);
+                            });
+                            torrent.on('download', function (bytes) {
+                                console.log('just downloaded: ' + bytes);
+                                console.log('total downloaded: ' + torrent.downloaded);
+                                console.log('download speed: ' + torrent.downloadSpeed);
+                                console.log('progress: ' + torrent.progress);
+                            });
+							torrent.on('upload',function(bytes){
+                                console.log('just uploaded: ' + bytes);
+                                console.log('total uploaded: ' + torrent.uploaded);
+                                console.log('upload speed: ' + torrent.uploadSpeed);
+                               //console.log('progress: ' + torrent.progress)
+                            });
+
+                        }
+                );
+
+    }
+</script>
+</body>
+</html>

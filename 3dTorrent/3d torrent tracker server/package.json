@@ -1,0 +1,8 @@
+{
+  "name": "webtorrent-tracker-server",
+  "version": "0.0.1",
+  "dependencies": {
+    "bittorrent-tracker": "^7.0.1"
+  },
+  "readmeFilename": "README.md"
+}

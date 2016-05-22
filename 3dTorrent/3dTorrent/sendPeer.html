@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+    <title>Simple File Sending Peer</title>
+    <style>
+        body {
+            font-family: sans-serif;
+        }
+    </style>
+</head>
+<body>
+<h2>Start seeding</h2>
+<p>
+    choose a file (or files) to begin sharing. Or choose a file:
+    <input type="file" name="upload" multiple>
+</p>
+
+<!-- Include the latest version of WebTorrent -->
+<script src="/bundle.js"></script>
+
+<script>
+    //global.WEBTORRENT_ANNOUNCE = ['ws://10.60.36.231:9090'];
+    var WebTorrent=require("webtorrent");
+    var uploadElement = require('upload-element');
+    /*var client = new WebTorrent({
+	   rtcConfig:{
+	      "iceServers":[
+		     {"url":"stun:23.21.150.121","urls":"stun:23.21.150.121"},{"url":"turn:global.turn.twilio.com:3478?transport=udp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=udp"},{"url":"turn:global.turn.twilio.com:3478?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=tcp"},{"url":"turn:global.turn.twilio.com:443?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:443?transport=tcp"}
+		  ]
+	   }
+	});*/
+	var client =new WebTorrent();
+    var upload = document.querySelector('input[name=upload]');
+    uploadElement(upload, function (err, files) {
+        files = files.map(function (file) { return file.file });
+        onFiles(files)
+    });
+    function onFiles (files) {
+        files.forEach(function (file) {
+            console.log(' - %s (%s bytes)', file.name, file.size)
+        });
+        seed(files);
+    }
+    function seed (files) {
+        if (files.length === 0) return;
+        client.seed(files,{
+            announce:['ws://202.120.163.141:80']
+        },onTorrent);
+    }
+    function onTorrent (torrent) {
+        upload.value = upload.defaultValue;// reset upload element
+        console.log('Torrent magnet link:', torrent.magnetURI);
+        torrent.on('upload',function(bytes){
+            console.log('just uploaded: ' + bytes);
+            console.log('total uploaded: ' + torrent.uploaded);
+            console.log('upload speed: ' + torrent.uploadSpeed);
+            //console.log('progress: ' + torrent.progress)
+			console.log('stop');
+			torrent.uploaded=0;
+        });
+    }
+	
+	function getRtcConfig (url, cb) {
+    xhr(url, function (err, res) {
+      if (err || res.statusCode !== 200) {
+        cb(new Error('Could not get WebRTC config from server. Using default (without TURN).'))
+      } else {
+        var rtcConfig
+        try {
+          rtcConfig = JSON.parse(res.body)
+        } catch (err) {
+          return cb(new Error('Got invalid WebRTC config from server: ' + res.body))
+        }
+        debug('got rtc config: %o', rtcConfig)
+        cb(null, rtcConfig)
+      }
+    })
+  }
+</script>
+</body>
+</html>

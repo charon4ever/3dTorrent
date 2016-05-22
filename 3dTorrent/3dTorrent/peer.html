@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title></title>
+</head>
+<body>
+<div id="container">
+    <p id="location"></p>
+    <p id="peers"></p>
+</div>
+
+<script src="/bundle.js"></script>
+<script src="/matrix4.js"></script>
+<script src="/build/jquery-1.4.min.js"></script>
+<script src="/build/three.js"></script>
+<script src="/js/loaders/ColladaLoader.js"></script>
+<script src="/js/libs/stats.min.js"></script>
+<script src="/js/controls/thirdPersonControls.js"></script>
+<script src="/scene-scale.js"></script>
+<script type="text/javascript">
+
+   var WebTorrent=require("webtorrent");
+    /*******************************************************/
+
+    var SCREEN_WIDTH = window.innerWidth;
+    var SCREEN_HEIGHT = window.innerHeight;
+    var windowHalfX = window.innerWidth / 2;
+    var windowHalfY = window.innerHeight / 2;
+
+    //webgl全局变量
+    var stats;
+    var controls;
+    var camera, scene;
+    var canvasRenderer, webglRenderer;//渲染器
+    var clock = new THREE.Clock();
+    var mesh, zmesh, geometry;
+    var avatarModel;
+    var theta;
+    var skyBox;
+    var peerInfo;
+
+    var mouseX = 0, mouseY = 0;
+    var FLOOR = 0;
+    var render_canvas = 0, render_gl = 1;
+    var maxXCell=0,maxYCell=0,minXCell=1000,minYCell=1000;
+    var renderOKFlag=false;//是否可以开始渲染，在所有场景模型处理过一边后置1
+    var workerNum=3;
+    var sceneScale= new SceneScale({
+        maxX:1.1e3,
+        minX:-1.1e3,
+        maxY:1.1e3,
+        minY:-1.1e3,
+        stepX:22,
+        stepY:22
+    });
+    var aoiRange=3000;
+    var animateFlag=false;
+
+    var container = document.getElementById( 'container' );
+
+    var originalMeshData=[]; //存储原始模型信息
+    var cellMeshData={}; //存储每一个网格内各模型信息
+    var cellLoadFlag={};//存储每一个网格内模型加载flag
+    var colorLib=[];//存储颜色
+    var calWorker=[];//存储子线程
+    var peerAddress=[];//存储peers
+
+    /********************************************************/
+    var client=new WebTorrent({
+	   rtcConfig:{
+	      "iceServers":[
+		     {"url":"stun:23.21.150.121","urls":"stun:23.21.150.121"},{"url":"turn:global.turn.twilio.com:3478?transport=udp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=udp"},{"url":"turn:global.turn.twilio.com:3478?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:3478?transport=tcp"},{"url":"turn:global.turn.twilio.com:443?transport=tcp","username":"b2f027d56b89bdaffe72ea7c3c74683dd8a7ed7671e00b140112e0c627fac70f","credential":"6i8fALIIfBrds2eBM9wz/l3Q3SgpVsrJhiu+MW7NO0o=","urls":"turn:global.turn.twilio.com:443?transport=tcp"}
+		  ]
+	   }
+	});
+	
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+
+        //小地图和坐标
+        locationPoint = document.getElementById("location");
+        locationPoint.style.location = 'absolute';
+        locationPoint.style.right = 100;
+
+        //其他节点地址信息
+        peerInfo=document.getElementById('peers');
+
+
+        //第三人称相机
+        camera = new THREE.PerspectiveCamera(75, SCREEN_WIDTH / SCREEN_HEIGHT, 1, 100000);
+        camera.position.z = 0;
+        camera.position.x = 0;
+        camera.position.y = 300;
+        var lookPosition = new THREE.Vector3(300, 300, 0);
+        camera.lookAt(lookPosition);
+
+        // 地面
+        var mapUrl = "/images/grass.jpg";
+        var map = THREE.ImageUtils.loadTexture(mapUrl);
+        var xm = new THREE.MeshBasicMaterial({map: map});
+        geometry = new THREE.PlaneGeometry(1, 1, 150, 100);
+        mesh = new THREE.Mesh(geometry, xm);
+        mesh.position.set(0, FLOOR, 0);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.scale.set(1000, 1000, 100);
+        scene.add(mesh);
+
+        // 灯光
+        var ambient = new THREE.AmbientLight(0x221100);
+        scene.add(ambient);
+        var directionalLight = new THREE.DirectionalLight(0xffeedd, 1.5);
+        directionalLight.position.set(0, -70, 100).normalize();
+        scene.add(directionalLight);
+
+        // 渲染器
+        if (render_gl) {
+            try {
+                webglRenderer = new THREE.WebGLRenderer();
+                webglRenderer.setClearColor(0xffffff);
+                webglRenderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+                webglRenderer.domElement.style.position = "relative";
+                container.appendChild(webglRenderer.domElement);
+            }
+            catch (e) {
+            }
+        }
+        if (render_canvas) {
+            canvasRenderer = new THREE.CanvasRenderer();
+            canvasRenderer.setClearColor(0xffffff);
+            canvasRenderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+            container.appendChild(canvasRenderer.domElement);
+        }
+
+        // STATS
+        stats = new Stats();
+        stats.domElement.style.position = 'absolute';
+        stats.domElement.style.top = '0px';
+        stats.domElement.style.zIndex = 100;
+        container.appendChild(stats.domElement);
+
+        //人物化身及动画
+        var daeLoader = new THREE.ColladaLoader();
+        daeLoader.load("/models/collada/avatar.dae", function (collada) {
+            collada.scene.traverse(function (child) {
+                if (child instanceof THREE.SkinnedMesh) {
+                    var animation = new THREE.Animation(child, child.geometry.animation);
+                    window.addEventListener('keydown', function () {
+                        if (!animateFlag) {
+                            animation.play();
+                            animateFlag = true;
+                        }
+                    }, false);
+                    window.addEventListener('keyup', function () {
+                        animation.stop();
+                        animateFlag = false;
+                    }, false);
+                }
+            });
+            collada.scene.scale.set(10, 10, 10);
+            collada.scene.position.set(camera.position.x + 200, 0, 0);
+            avatarModel = collada.scene;
+            scene.add(avatarModel);
+
+            controls = new THREE.ThirdPersonControls(avatarModel);
+            controls.movementSpeed = 10;
+            controls.lookSpeed = 50;
+            controls.lookVertical = false;
+            controls.constrainVertical = false;
+            controls.verticalMin = 1.1;
+            controls.verticalMax = 2.2;
+        });
+
+        //天空盒
+        var imgs = [
+            "/skybox/px.jpg", "/skybox/nx.jpg", "/skybox/py.jpg", "/skybox/ny.jpg", "/skybox/pz.jpg", "/skybox/nz.jpg"
+        ];
+        var textureCube = THREE.ImageUtils.loadTextureCube(imgs);
+        var shader = THREE.ShaderLib["cube"];
+        shader.uniforms["tCube"].value = textureCube;
+        var material = new THREE.ShaderMaterial({
+                    fragmentShader: shader.fragmentShader,
+                    vertexShader: shader.vertexShader,
+                    uniforms: shader.uniforms,
+                    depthWrite: false,
+                    side: THREE.BackSide
+                }),
+                skyBox = new THREE.Mesh(new THREE.BoxGeometry(100000, 100000, 100000), material);
+        scene.add(skyBox);
+
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function () {
+            if (xhr.status == 200 && xhr.readyState == 4) {
+                sceneHandle(xhr.responseText);
+            }
+        };
+        xhr.open('GET', "/data/sceneData/sceneData.json");
+        xhr.send();
+    }
+        function sceneHandle(result) {
+            var sceneData = JSON.parse(result);
+            for (var p = 0; p < sceneData.meshes.length; p++) {
+                var meshBox = sceneData.meshes[p].bbox;
+                var meshMin = {x: meshBox[0], y: meshBox[1], z: meshBox[2]};
+                var meshMax = {x: meshBox[3], y: meshBox[4], z: meshBox[5]};
+                var position = {};
+                position.x = (meshMin.x + meshMax.x) / 2;
+                position.y = (meshMin.y + meshMax.y) / 2;
+                position.z = (meshMin.z + meshMax.z) / 2;
+                position.m = new THREE.Matrix4(position.x, position.y, position.z, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                sceneData.meshes[p].position = position;
+                var a=sceneData.meshes[p].meshID.toString();
+                var b= a.length-3;
+                var c= a.substr(0,b);
+                sceneData.meshes[p].group=sceneData.group[parseInt(c)];
+                originalMeshData[sceneData.meshes[p].meshID] = sceneData.meshes[p];
+            }
+
+            //遍历树型json**************************************/
+            var tempTrans = [];   //存储树根到叶子的全部转换矩阵
+            sceneData.node = [];//存储各个模型数据
+            function recurseJson(node) {
+                if ("nodes" in node) {
+                    tempTrans.push(node.transform);
+                    for (var i = 0; i < node.nodes.length; i++) {
+                        recurseJson(node.nodes[i]);
+                    }
+                    tempTrans.pop();
+                    return 1;
+                }
+                else {
+                    tempTrans.push(node.transform);
+                    var tempMatrix = new THREE.Matrix4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1); //存储中间计算过程中的临时矩阵
+                    for (var i = tempTrans.length - 1; i >= 0; i--) {
+                        var t = tempTrans[i];
+                        var m1 = new THREE.Matrix4(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11], t[12], t[13], t[14], t[15]);
+                        tempMatrix.multiply(m1);
+                    }
+                    var tempP = originalMeshData[node.meshID].position.m;
+                    node.finalTransform = tempMatrix;
+                    var tempPosition = new THREE.Matrix4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+                    tempPosition.multiplyMatrices(tempP, tempMatrix);
+                    var a = tempPosition.elements[0];
+                    var b = tempPosition.elements[4];
+                    var c = tempPosition.elements[8];
+                    var ps = {x: a, y: b, z: c};
+                    node.position = ps;
+                    sceneScale.locateCell(ps);
+                    node.xCell = sceneScale.xCell;
+                    node.yCell = sceneScale.yCell;
+                    if ((node.xCell) > maxXCell) {
+                        maxXCell = node.xCell;
+                    }
+                    if ((node.yCell) > maxYCell) {
+                        maxYCell = node.yCell;
+                    }
+                    if ((node.xCell) < minXCell) {
+                        minXCell = node.xCell;
+                    }
+                    if ((node.yCell) < minYCell) {
+                        minYCell = node.yCell;
+                    }
+                    sceneData.node.push(node);
+                    tempTrans.pop();
+                    return 1;
+                }
+            }
+
+            recurseJson(sceneData.rootnode);
+            console.log(maxXCell, minXCell, maxYCell, minYCell);
+
+
+            /*********************读取meshID对应的magnet***************/
+            sceneData.magnet.forEach(function (obj) {
+                originalMeshData[obj.meshID].magnetUrl = obj.magnetUrl;
+            });
+
+            /*********************************************************/
+            for (var xr = 0; xr < 1000; xr++) {
+                cellMeshData[xr] = [];
+                cellLoadFlag[xr] = [];
+                for (var zr = 0; zr < 1000; zr++) {
+                    cellMeshData[xr][zr] = [];
+                    cellLoadFlag[xr][zr] = false;
+                }
+            }
+            for (var l = 0; l < sceneData.node.length; l++) {
+                var x = sceneData.node[l].xCell;
+                var z = sceneData.node[l].yCell;
+                cellMeshData[x][z].push(sceneData.node[l]);
+            }
+
+            colorLib = [0xCD0000, 0xFFA500, 0xFFFF00, 0x90EE90, 0x7EC0EE, 0xEE30A7, 0xB23AEE, 0x919191, 0x8B4513, 0x0A0A0A];
+
+
+            /*********************************************************/
+            /*模型矩阵计算的子线程*/
+                for(var i=0;i< workerNum;i++){
+                    calWorker[i]= new Worker("/matrixCalculating.js");
+                    calWorker [i].onmessage=function(event){
+                        switch(event.data.type){
+                            case"waitForLoad" :
+                                var fGeometry=event.data.fGeometry;
+                                var tempGeometry =copyModel(fGeometry);
+                                var tempModel = new THREE.Mesh(tempGeometry,
+                                        new THREE.MeshBasicMaterial({color: colorLib[Math.round(Math.random()*10)]}));
+                                scene.add(tempModel);
+                                console.log("model add ok!");
+                                break;
+                            case "done":
+                                var tempGeometry=copyModel(event.data.qGeometry);
+                                var tempModel=new THREE.Mesh(tempGeometry,
+                                        new THREE.MeshBasicMaterial({color: colorLib[Math.round(Math.random()*10)]}));
+                                scene.add(tempModel);
+                                break;
+                            default:
+                                break;
+                        }
+                    };
+                    calWorker[i].onerror= function(event){
+                                console.log(event.data);
+                    };
+                }
+            /***************************************************************/
+
+                var jobID=0;
+                for (var xr = 0; xr < 1000; xr++) {
+                    for (var zr = 0; zr < 1000; zr++) {
+                        for (var l = 0; l < cellMeshData[xr][zr].length; l++) {
+                            var q = cellMeshData[xr][zr][l];
+                            originalMeshData[q.meshID].waitForLoad = [];//把每一个waitforload初始化
+                        }
+                    }
+                }
+                var currentPos={};
+                currentPos.x= avatarModel.position.x;
+                currentPos.y=avatarModel.position.z;
+            locationPoint.innerHTML='('+avatarModel.position.x+','+avatarModel.position.y+','+avatarModel.position.z+')';
+            sceneScale.locateCell(currentPos);
+                var xr=sceneScale.xCell;
+                var zr=sceneScale.yCell;
+                console.log(xr,zr);
+            cellLoadFlag[xr][zr]=true;
+                for (var l = 0; l < cellMeshData[xr][zr].length; l++) {
+                    var q = cellMeshData[xr][zr][l];
+                    console.log(xr, zr, l, "there are",cellMeshData[xr][zr].length,"trees");
+                    jobID++;
+
+                    if ("flag" in originalMeshData[q.meshID].group) {
+                        if (originalMeshData[q.meshID].group.flag == "isload") {
+                            console.log(q.meshID,"doneload");
+                            var n = jobID % workerNum;
+                            calWorker[n].postMessage({
+                                type: "done",
+                                geometry: originalMeshData[q.meshID].geometry,
+                                node: q
+                            });
+                        }
+                        else if (originalMeshData[q.meshID].group.flag == "isloading") {
+                           // originalMeshData[q.meshID].group.waitForLoad.push({node: q, jobID: jobID});
+                            originalMeshData[q.meshID].waitForLoad.push({node: q, jobID: jobID});
+                            console.log(q.meshID, "push", originalMeshData[q.meshID].waitForLoad.length);
+                        }
+                    }
+                    else {
+                        originalMeshData[q.meshID].group.flag = "isloading";
+                        console.log(q.meshID, "unload");
+
+                        originalMeshData[q.meshID].waitForLoad.push({node: q, jobID: jobID});
+
+                        var magnetUrl= originalMeshData[q.meshID].group.infoHash;
+						var cDate=new Date();
+                        originalMeshData[q.meshID].group.timeStart=cDate.getTime();
+                        client.add(magnetUrl,{
+                            announce:['ws://cg.tongji.edu.cn:80']
+                        },function(torrent){
+                                    console.log('Client is downloading:', torrent.infoHash);
+                                    torrent.on('wire',function(wire){
+                                        console.log("new node"+wire.peerId.toString()+''+wire.remoteAddress);
+                                    });
+                                    torrent.on('peer',function(peer){
+                                        if(peerAddress.every(function(element,index,array){
+                                            return element.id!==peer.id;
+                                        })){
+                                            peerAddress.push(peer);
+											peerInfo.innerHTML=peerInfo.innerHTML+" "+peer.id;
+										  console.log("new peerAddress",peerAddress);
+                                        }else{
+										   console.log("old peer");
+										}
+                                    
+                                    });
+                                    torrent.on('done',function(){
+									var cDate=new Date();
+                                        originalMeshData[q.meshID].group.timeEnd=cDate.getTime();
+                                        originalMeshData[q.meshID].group.loadTime=originalMeshData[q.meshID].group.timeEnd
+                                                -originalMeshData[q.meshID].group.timeStart;
+                                         console.log("group"+originalMeshData[q.meshID].group.groupID+"time:"+
+                                                 originalMeshData[q.meshID].group.loadTime);
+                                    });
+                                    torrent.on('download', function (bytes) {
+                                        console.log('just downloaded: ' + bytes);
+                                        console.log('total downloaded: ' + torrent.downloaded);
+                                        console.log('download speed: ' + torrent.downloadSpeed);
+                                        console.log('progress: ' + torrent.progress);
+                                    });
+									torrent.on('upload',function(bytes){
+                                console.log('just uploaded: ' + bytes);
+                                console.log('total uploaded: ' + torrent.uploaded);
+                                console.log('upload speed: ' + torrent.uploadSpeed);
+                            });
+                                    torrent.files.forEach(function(file){
+                                        file.getBuffer(function (err,buf){
+                                            if(err){
+                                                console.log("get file buffer error");
+                                            } else{
+									
+                                                var meshID=file.name.split('.')[0];
+                                                var fileString= buf.toString();
+                                                console.log("file doneload");
+                                                    handleResult(JSON.parse(fileString),meshID);
+													
+                                                
+                                            }
+                                        });
+                                    });
+                                  }
+                        );
+                }
+            }
+            renderOKFlag=true;
+}
+
+        function handleResult(content,meshID){
+            var geometry={faceVertexUvs:[],vertices:[],faces:[]};
+            parseModel(content);
+            originalMeshData[meshID].geometry=copyModel(geometry);
+
+            originalMeshData[meshID].group.flag = "isload";
+
+            for(var i=0;i<originalMeshData[meshID].waitForLoad.length;i++){
+                var m=originalMeshData[meshID].waitForLoad[i].jobID%workerNum;
+                calWorker[m].postMessage({type:"waitForLoad", geometry:originalMeshData[meshID].geometry,
+                    node:originalMeshData[meshID].waitForLoad[i].node});
+            }
+
+            function parseModel( json ) {
+                var i, offset, zLength,
+                        vertex, face,
+                        faces =json.faces,
+                        vertices = json.verts,nUvLayers = 0;
+                if (json.uvs !== undefined ) {for ( i = 0; i < json.uvs.length; i ++ ) {
+                        if (json.uvs[ i ].length ) nUvLayers ++;
+                    }
+                    for ( i = 0; i < nUvLayers; i ++ ) {
+                        geometry.faceVertexUvs[ i ] = [];
+                    }
+                }
+                offset = 0;
+                zLength = vertices.length;
+                while ( offset < zLength ) {
+                    vertex ={};
+                    vertex.x = vertices[ offset++ ];
+                    vertex.y = vertices[offset++ ] ;
+                    vertex.z = vertices[offset ++ ] ;
+                    geometry.vertices.push( vertex );
+                }
+                offset = 0;
+                zLength = faces.length;
+                while ( offset < zLength ) {
+                    face = {};
+                    face.a = faces[ offset ++ ];
+                    face.b = faces[offset ++ ];
+                    face.c = faces[offset ++ ];
+                    geometry.faces.push( face );
+                }
+            }
+
+        }
+
+        function renderingLoad(){
+            if(renderOKFlag==true) {
+                var jobID = 0;
+                var currentPos = {};
+                currentPos.x = avatarModel.position.x;
+                currentPos.y = avatarModel.position.z;
+                locationPoint.innerHTML='('+avatarModel.position.x+','+avatarModel.position.y+','+avatarModel.position.z+')';
+                sceneScale.locateCell(currentPos);
+                var xr = sceneScale.xCell;
+                var zr = sceneScale.yCell;
+
+                if (cellLoadFlag[xr][zr] == false) {
+                    cellLoadFlag[xr][zr] = true;
+                    console.log("in this rol",xr,zr,"there are",cellMeshData[xr][zr].length,"trees");
+                    for (var l = 0; l < cellMeshData[xr][zr].length; l++) {
+                        var q = cellMeshData[xr][zr][l];
+                        jobID++;
+                        if ("flag" in originalMeshData[q.meshID].group) {
+                            if (originalMeshData[q.meshID].group.flag == "isload") {
+                                console.log(q.meshID,"doneload");
+                                var n = jobID % workerNum;
+                                calWorker[n].postMessage({
+                                    type: "done",
+                                    geometry: originalMeshData[q.meshID].geometry,
+                                    node: q
+                                });
+                            }
+                            else if (originalMeshData[q.meshID].group.flag == "isloading") {
+
+                                originalMeshData[q.meshID].waitForLoad.push({node: q, jobID: jobID});
+                                console.log(q.meshID, "push", originalMeshData[q.meshID].waitForLoad.length);
+                            }
+                        }
+                        else {
+                            originalMeshData[q.meshID].group.flag = "isloading";
+                            console.log(q.meshID,"unload");
+
+                            originalMeshData[q.meshID].waitForLoad.push({node: q, jobID: jobID});
+
+                            var magnetUrl= originalMeshData[q.meshID].group.infoHash;
+                            var result='';
+							var cDate=new Date();
+                            originalMeshData[q.meshID].group.timeStart=cDate.getTime();
+                            client.add(magnetUrl,{
+                                        announce:['ws://cg.tongji.edu.cn:80']
+                                    }, function(torrent){
+                                        console.log('Client is downloading:', torrent.infoHash);
+                                        torrent.on('wire',function(wire){
+                                            console.log("new node"+wire.peerId.toString()+''+wire.remoteAddress);
+                                        });
+                                        torrent.on('peer',function(peer){
+                                            if(peerAddress.every(function(element){
+									       return element.id!==peer.id;
+									   })){
+									      peerAddress.push(peer);
+										  peerInfo.innerHTML=peerInfo.innerHTML+" "+peer.id;
+										  console.log("new peerAddress",peerAddress);
+									   }else{
+									      console.log("old peer");
+									   }
+                                        });
+                                        torrent.on('done',function(){
+										var cDate=new Date();
+                                            originalMeshData[q.meshID].group.timeEnd=cDate.getTime();
+                                            originalMeshData[q.meshID].group.loadTime=originalMeshData[q.meshID].group.timeEnd
+                                                    -originalMeshData[q.meshID].group.timeStart;
+                                            console.log("group"+originalMeshData[q.meshID].group.groupID+"time:"+
+                                                    originalMeshData[q.meshID].group.loadTime);
+                                        });
+                                        torrent.on('download', function (bytes) {
+                                            console.log('just downloaded: ' + bytes);
+                                            console.log('total downloaded: ' + torrent.downloaded);
+                                            console.log('download speed: ' + torrent.downloadSpeed);
+                                            console.log('progress: ' + torrent.progress);
+                                        });
+										torrent.on('upload',function(bytes){
+                                console.log('just uploaded: ' + bytes);
+                                console.log('total uploaded: ' + torrent.uploaded);
+                                console.log('upload speed: ' + torrent.uploadSpeed);
+
+                            });
+                                        torrent.files.forEach(function(file){
+                                            file.getBuffer(function(err,buf){
+                                                if(err){
+                                                    console.log("get file buffer error");
+                                                }else{
+                                                    var meshID=file.name.split('.')[0];
+                                                    var fileString= buf.toString();
+                                                   console.log("file doneload");
+                                                       handleResult(JSON.parse(fileString),meshID);
+													   
+                                                   
+                                                }
+                                            });
+                                        });
+                                    }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        function copyModel(geometryData){
+            var geometry=new THREE.Geometry();
+            for(var i=0;i<geometryData.vertices.length;i++){
+                var vertex=new THREE.Vector3();
+                vertex.x=geometryData.vertices[i].x;
+                vertex.y=geometryData.vertices[i].y;
+                vertex.z=geometryData.vertices[i].z;
+                geometry.vertices[i] =vertex;
+            }
+            for(var i=0;i< geometryData.faces.length;i++){
+                var face=new THREE.Face3();
+                face.a=geometryData.faces[i].a;
+                face.b= geometryData.faces[i].b;
+                face.c=geometryData.faces[i].c;
+                geometry.faces[i]=face;
+            }
+            geometry.computeFaceNormals();
+            geometry.computeBoundingSphere();
+            return geometry;
+        }
+
+        function animate() {
+            var delta = clock.getDelta();
+            render();
+            if(controls) {
+                theta=controls.update(delta);
+            }
+            if(avatarModel){
+                camera.position.x=avatarModel.position.x-10*Math.cos(theta);
+                camera.position.y=avatarModel.position.y+15;
+                camera.position.z=avatarModel.position.z-10*Math.sin(theta);
+                var lookPosition = new THREE.Vector3(avatarModel.position.x, camera.position.y, avatarModel.position.z );
+                camera.lookAt(lookPosition);
+            }
+            renderingLoad();
+            requestAnimationFrame( animate );
+            THREE.AnimationHandler.update( delta );
+            stats.update();
+        }
+
+        function render() {
+            if (render_gl ) webglRenderer.render(scene, camera);
+        }
+
+</script>
+</body>
+</html>
